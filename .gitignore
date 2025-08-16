@@ -1,0 +1,17 @@
+.DS_Store
+.Rhistory
+.Rproj.user/
+.RData
+.Ruserdata
+.Rapp.history
+.ipynb_checkpoints/
+__pycache__/
+.venv/
+.env
+
+# ignore raw data + outputs (keep readmes)
+**/data/*
+!**/data/README.md
+**/results/*
+!**/results/figures/
+!**/results/figures/README.md
