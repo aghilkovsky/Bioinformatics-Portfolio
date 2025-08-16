@@ -1,0 +1,436 @@
+---
+title: "scRNA-seq Tumor Microenvironment (Seurat)"
+author: "Anastasia Ghilkovsky"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 7, fig.height = 5)
+```
+
+Packages: 
+
+# Install Packages 
+install.packages("Seurat")
+install.packages("tidyverse")
+install.packages("patchwork")
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::install(c("org.Hs.eg.db", "clusterProfiler"))
+
+
+```{r}
+# Load libraries
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(jsonlite)
+library(tibble)
+library(dplyr)
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(reshape2)
+library(ggplot2)
+```
+
+
+Importing Data for QC
+```{r}
+
+#Path to the raw_feature_bc_matrix folder
+data_dir <- "scRNA_tumor/data/raw_feature_bc_matrix"
+
+
+#Load data
+tumor_data <- Read10X(data.dir = data_dir)
+
+#Create Seurat object
+seurat_obj <- CreateSeuratObject(counts = tumor_data, project = "Tumor_Mix", min.cells = 3, min.features = 200)
+
+
+#Add metadata: percent mitochondrial genes
+seurat_obj[["percent.mt"]] <- PercentageFeatureSet(seurat_obj, pattern = "^MT-")
+
+```
+
+Violin Plots for QC
+```{r}
+VlnPlot(seurat_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+
+seurat_obj <- subset(seurat_obj, 
+                     subset = nFeature_RNA > 500 & nFeature_RNA < 6000 & percent.mt < 15)
+
+seurat_obj
+
+seurat_obj <- NormalizeData(seurat_obj, normalization.method = "LogNormalize", scale.factor = 10000)
+
+seurat_obj <- FindVariableFeatures(seurat_obj, selection.method = "vst", nfeatures = 2000)
+
+
+top10 <- head(VariableFeatures(seurat_obj), 10)
+```
+
+
+Create Base Plot
+```{r}
+plot1 <- VariableFeaturePlot(seurat_obj)
+
+#Add top 10 labels to plot
+plot1 + LabelPoints(plot = plot1, points = top10, repel = TRUE)
+
+
+seurat_obj <- ScaleData(seurat_obj, features = VariableFeatures(seurat_obj))
+
+seurat_obj <- RunPCA(seurat_obj, features = VariableFeatures(seurat_obj))
+
+
+print(seurat_obj[["pca"]], dims = 1:2, nfeatures = 10)
+
+```
+
+Elbow Plot
+```{r}
+ElbowPlot(seurat_obj)
+```
+
+Clustering
+```{r}
+seurat_obj <- FindNeighbors(seurat_obj, dims = 1:15)
+seurat_obj <- FindClusters(seurat_obj, resolution = 0.5)  # try 0.4–1.2 for resolution tuning
+
+
+seurat_obj <- RunUMAP(seurat_obj, dims = 1:15)
+
+#Plot UMAP with cluster labels
+DimPlot(seurat_obj, reduction = "umap", label = TRUE, pt.size = 0.5)
+
+
+cluster_markers <- FindAllMarkers(seurat_obj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+#Top markers per cluster
+top_markers <- cluster_markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+
+#View results
+head(top_markers)
+```
+
+Feature Plot
+```{r}
+FeaturePlot(seurat_obj, features = c("CD3D", "CD14", "EPCAM", "MS4A1", "LYZ", "MKI67"))
+```
+
+Top Markers, Cell-Type Annotation
+```{r}
+top_markers <- cluster_markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC)
+top_markers
+
+new_cluster_ids <- c(
+  "Macrophages", "Tumor cells", "Tumor cells", "B cells", "T cells", "Monocytes", 
+  "T cells", "B cells", "Tumor cells", "NK cells", "T cells", "DCs", 
+  "T cells", "T cells", "Tumor cells", "Tumor cells", "DCs", "T cells", 
+  "Prolif. cells", "B cells", "Stromal", "Unknown"
+)
+
+#Assign new identities
+names(new_cluster_ids) <- levels(seurat_obj)
+seurat_obj <- RenameIdents(seurat_obj, new_cluster_ids)
+
+DimPlot(seurat_obj, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+head(seurat_obj@meta.data)
+```
+
+Sample Type Assignment (JSON)
+```{r}
+#Load libraries
+library(jsonlite)
+library(tibble)
+library(dplyr)
+library(Seurat)
+
+#Set the path to JSON file
+tag_path <- "scRNA_tumor/data/cells_per_tag.json"
+
+
+#Read JSON
+tag_data <- fromJSON(tag_path)
+
+#Convert JSON list to long format tibble
+tag_df <- bind_rows(lapply(names(tag_data), function(tag) {
+  tibble(barcode = unlist(tag_data[[tag]]), sample = tag)
+}))
+
+#Match barcodes to cell names in Seurat object
+seurat_obj$SampleTag <- tag_df$sample[match(Cells(seurat_obj), tag_df$barcode)]
+
+#Confirm assignment
+cat("Number of cells with assigned sample tags:\n")
+print(sum(!is.na(seurat_obj$SampleTag)))
+
+#View distribution of sample tags
+cat("Distribution of SampleTag assignments:\n")
+print(table(seurat_obj$SampleTag, useNA = "always"))
+
+saveRDS(seurat_obj, file = "seurat_with_sample_tags.rds")
+
+
+DimPlot(seurat_obj, group.by = "SampleTag", reduction = "umap", label = TRUE) + 
+  ggtitle("UMAP by Sample Tag")
+
+
+Idents(seurat_obj) <- "SampleTag"
+sample_markers <- FindAllMarkers(seurat_obj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+head(sample_markers)
+```
+
+Plots and Graphs 
+```{r}
+#Create Violin Plot
+VlnPlot(seurat_obj, features = "CD3D", group.by = "SampleTag")
+
+
+seurat_obj$SampleTag <- ifelse(is.na(seurat_obj$SampleTag), "Unassigned", seurat_obj$SampleTag)
+
+DimPlot(seurat_obj, group.by = "SampleTag", reduction = "umap", label = TRUE) + 
+  ggtitle("UMAP Colored by Sample")
+
+
+top_genes <- sample_markers %>%
+  group_by(cluster) %>%
+  top_n(n = 5, wt = avg_log2FC)
+
+
+#Create Heatmap
+DoHeatmap(seurat_obj, features = top_genes$gene, group.by = "SampleTag") + 
+  ggtitle("Top Markers by Sample")
+
+DoHeatmap(
+  seurat_obj,
+  features = unique(top_genes$gene),
+  group.by = "SampleTag",
+  raster = FALSE  # higher resolution for export
+) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  ) +
+  ggtitle("Top Sample-Specific Markers")
+
+
+Idents(seurat_obj) <- "SampleTag"
+de_genes <- FindMarkers(seurat_obj, ident.1 = "BC002", ident.2 = "BC001", logfc.threshold = 0.25)
+head(de_genes)
+
+
+VlnPlot(seurat_obj, features = c("SLPI", "PAX8", "IGFBP3"), group.by = "SampleTag", pt.size = 0)
+
+FeaturePlot(seurat_obj, features = c("SLPI", "PAX8"), split.by = "SampleTag")
+
+write.csv(de_genes, file = "DEG_BC002_vs_BC001.csv")
+
+top_up <- head(de_genes[order(-de_genes$avg_log2FC), ], 10)
+top_down <- head(de_genes[order(de_genes$avg_log2FC), ], 10)
+genes_to_plot <- rownames(rbind(top_up, top_down))
+
+DoHeatmap(
+  seurat_obj,
+  features = genes_to_plot,
+  group.by = "SampleTag",
+  size = 3
+) +
+  scale_fill_gradientn(colors = c("magenta", "black", "yellow"), limits = c(0, 2.5)) +
+  theme(
+    axis.text.x = element_text(size = 6, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 6),
+    axis.title = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA),
+    legend.background = element_rect(fill = "white", color = NA),
+    legend.key = element_rect(fill = "white", color = NA),
+    panel.grid = element_blank()
+  )
+
+
+all_markers <- FindAllMarkers(seurat_obj, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+head(all_markers)
+write.csv(all_markers, "all_sample_markers.csv", row.names = FALSE)
+
+top_genes <- all_markers %>% group_by(cluster) %>% top_n(n = 3, wt = avg_log2FC)
+DotPlot(seurat_obj, features = unique(top_genes$gene), group.by = "SampleTag") + RotatedAxis()
+
+top_deg <- de_genes %>% 
+  filter(p_val_adj < 0.05 & abs(avg_log2FC) > 1) %>%
+  rownames_to_column("gene") %>%
+  pull(gene)
+saveRDS(seurat_obj, file = "seurat_obj_with_sampletag.rds")
+
+
+#Make sure the identities are set correctly
+Idents(seurat_obj) <- "SampleTag"
+
+#FindAllMarkers to get markers per sample
+all_markers <- FindAllMarkers(
+  seurat_obj,
+  only.pos = TRUE,          # only return positive markers
+  min.pct = 0.25,           # expressed in at least 25% of cells
+  logfc.threshold = 0.25    # minimum log fold change
+)
+
+#View the top rows
+head(all_markers)
+
+write.csv(all_markers, "all_sample_markers.csv", row.names = FALSE)
+
+#Load libraries
+library(dplyr)
+
+top_markers <- all_markers %>%
+  group_by(cluster) %>%
+  top_n(n = 3, wt = avg_log2FC)
+
+top_genes <- unique(top_markers$gene)
+
+DotPlot(seurat_obj, features = top_genes, group.by = "SampleTag") + RotatedAxis()
+
+
+DimPlot(seurat_obj, group.by = "SampleTag", reduction = "umap", label = TRUE, pt.size = 0.5)
+
+FeaturePlot(seurat_obj, features = c("SLPI", "PAX8", "IGFBP3"), cols = c("lightgrey", "red"), reduction = "umap")
+
+
+#Save Seurat object
+saveRDS(seurat_obj, file = "seurat_with_sample_tags.rds")
+
+#Save current heatmap
+ggsave("top_markers_heatmap.png", width = 10, height = 8, dpi = 300)
+
+immune_markers <- list(
+  T_cells = c("CD3D", "CD3E"),
+  B_cells = c("MS4A1"),
+  NK_cells = c("NKG7", "GNLY"),
+  Macrophages = c("CD68", "CD163"),
+  Dendritic_cells = c("FCER1A", "CST3")
+)
+
+immune_scores <- AddModuleScore(
+  object = seurat_obj,
+  features = immune_markers,
+  name = names(immune_markers)
+)
+
+library(ggplot2)
+library(reshape2)
+
+score_df <- as.data.frame(seurat_obj@meta.data[, grep("_1", colnames(seurat_obj@meta.data))])
+score_df$SampleTag <- seurat_obj$SampleTag
+
+melted <- melt(score_df, id.vars = "SampleTag")
+ggplot(melted, aes(x = SampleTag, y = value, fill = variable)) +
+  geom_bar(stat = "summary", fun = "mean", position = "dodge") +
+  labs(title = "Immune cell type scores per sample", y = "Average module score", x = "Tumor Sample") +
+  theme_minimal()
+
+head(melted)
+str(melted)
+
+#Rename columns to their actual immune cell names
+score_columns <- grep("_1$", colnames(seurat_obj@meta.data), value = TRUE)
+names(score_columns) <- names(immune_markers) 
+colnames(seurat_obj@meta.data)[colnames(seurat_obj@meta.data) %in% score_columns] <- names(score_columns)
+
+head(colnames(seurat_obj@meta.data), 20)
+
+#Add module scores for each immune cell type
+for (cell_type in names(immune_markers)) {
+  seurat_obj <- AddModuleScore(
+    object = seurat_obj,
+    features = list(immune_markers[[cell_type]]),
+    name = cell_type
+  )
+}
+
+
+#Get new added module score columns
+score_columns <- grep("1$", colnames(seurat_obj@meta.data), value = TRUE)
+
+#Add SampleTag for grouping
+score_df <- seurat_obj@meta.data[, c(score_columns, "SampleTag")]
+
+#Melt the data frame for ggplot
+library(reshape2)
+melted <- melt(score_df, id.vars = "SampleTag")
+
+
+library(ggplot2)
+
+ggplot(melted, aes(x = SampleTag, y = value, fill = variable)) +
+  geom_bar(stat = "summary", fun = "mean", position = "dodge") +
+  labs(title = "Immune Cell Type Scores per Tumor Sample",
+       y = "Average Module Score", x = "Tumor Sample") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+#Check high level tumor lineage markers
+FeaturePlot(seurat_obj, features = c("EPCAM", "KRT8", "PAX8", "SLPI", "IGFBP3", "MUC16", "CA125", "CDH1"))
+
+#ViolinPlot across SampleTag
+VlnPlot(seurat_obj, features = c("PAX8", "SLPI", "IGFBP3"), group.by = "SampleTag")
+```
+
+GO and KEGG
+```{r}
+Idents(seurat_obj) <- "SampleTag"
+bc001_vs_others <- FindMarkers(seurat_obj, ident.1 = "BC001", ident.2 = c("BC002", "BC003", "BC004"), min.pct = 0.25, logfc.threshold = 0.25)
+
+up_genes <- rownames(bc001_vs_others[bc001_vs_others$avg_log2FC > 0.5 & bc001_vs_others$p_val_adj < 0.05, ])
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install(c("org.Hs.eg.db", "clusterProfiler"))
+
+
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+
+Idents(seurat_obj) <- "seurat_clusters"
+
+cluster_markers <- FindAllMarkers(seurat_obj, 
+                                  only.pos = TRUE, 
+                                  min.pct = 0.25, 
+                                  logfc.threshold = 0.25)
+
+
+cluster4_genes <- cluster_markers %>% filter(cluster == "4") %>% pull(gene)
+
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+
+cluster4_entrez <- bitr(cluster4_genes, 
+                        fromType = "SYMBOL", 
+                        toType = "ENTREZID", 
+                        OrgDb = org.Hs.eg.db)
+
+
+go_results <- enrichGO(gene         = cluster4_entrez$ENTREZID,
+                       OrgDb        = org.Hs.eg.db,
+                       keyType      = "ENTREZID",
+                       ont          = "BP",
+                       pAdjustMethod = "BH",
+                       pvalueCutoff = 0.05,
+                       qvalueCutoff = 0.05)
+
+
+kegg_results <- enrichKEGG(gene         = cluster4_entrez$ENTREZID,
+                           organism     = 'hsa',
+                           pvalueCutoff = 0.05)
+
+
+
+barplot(go_results, showCategory = 10, title = "GO Enrichment")
+dotplot(kegg_results, showCategory = 10, title = "KEGG Pathways")
+```
+
+
