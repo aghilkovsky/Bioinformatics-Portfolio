@@ -1,0 +1,22 @@
+---
+title: "Propolis Microbiome (16S rRNA) — Portfolio Analysis"
+author: "Anastasia Ghilkovsky"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE, fig.width = 7, fig.height = 5)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(phyloseq)     # for microbiome data structures
+  library(vegan)        # diversity
+  library(DESeq2)       # optional differential abundance
+  library(pheatmap)
+  library(ggrepel)
+})
+# Paths are relative to the repo root
+PROJ <- "microbiome_16S"
+DIR_EXPORT <- file.path(PROJ, "results", "exports")         # exported from QIIME 2
+DIR_RES    <- file.path(PROJ, "results", "figures")
+dir.create(DIR_RES, recursive = TRUE, showWarnings = FALSE)
+theme_set(theme_minimal())
