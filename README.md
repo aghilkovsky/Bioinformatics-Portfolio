@@ -1,4 +1,6 @@
-# Bioinformatics Portfolio — Anastasia Ghilkovsky *still under construction*
+# Bioinformatics Portfolio — Anastasia Ghilkovsky
+
+*still under construction*
 
 - **scRNA-seq Tumor Microenvironment (Seurat)** → [`scRNA_tumor/scRNA_workflow.Rmd`](scRNA_tumor/scRNA_workflow.Rmd)
 
